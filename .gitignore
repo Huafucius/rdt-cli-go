@@ -1,0 +1,34 @@
+# 编译产物
+rdt
+rdt-*
+*.exe
+
+# 分发二进制
+dist/
+scripts/bin/
+
+# Go 工具链
+*.test
+*.out
+coverage.txt
+
+# 依赖缓存（go.sum 提交，vendor 不提交）
+vendor/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 运行时
+*.log
+*.pid
+
+# 用户凭证（绝对不能提交）
+*.json
+!testdata/**/*.json
