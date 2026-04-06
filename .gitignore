@@ -32,3 +32,4 @@ Thumbs.db
 # 用户凭证（绝对不能提交）
 *.json
 !testdata/**/*.json
+.worktrees/
