@@ -1,11 +1,7 @@
 package main
 
-import (
-	"fmt"
-	"os"
-)
+import "github.com/zhangtianhua/rdt-cli-go/cmd"
 
 func main() {
-	fmt.Fprintln(os.Stderr, "rdt-cli-go: not yet implemented")
-	os.Exit(1)
+	cmd.Execute()
 }
