@@ -46,13 +46,14 @@ func writePostsCSV(posts []*models.Post, path string) error {
 	defer w.Flush()
 
 	// Header
-	w.Write([]string{"id", "name", "title", "subreddit", "author", "score", "num_comments", "created_utc", "permalink", "url", "is_self", "over_18"}) //nolint
+	w.Write([]string{"id", "name", "title", "selftext", "subreddit", "author", "score", "num_comments", "created_utc", "permalink", "url", "is_self", "over_18"}) //nolint
 
 	for _, p := range posts {
 		w.Write([]string{ //nolint
 			p.ID,
 			p.Name,
 			p.Title,
+			p.Selftext,
 			p.Subreddit,
 			p.Author,
 			strconv.Itoa(p.Score),
