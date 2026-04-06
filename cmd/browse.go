@@ -8,6 +8,7 @@ import (
 
 	"github.com/zhangtianhua/rdt-cli-go/internal/cache"
 	"github.com/zhangtianhua/rdt-cli-go/internal/client"
+	"github.com/zhangtianhua/rdt-cli-go/internal/models"
 	"github.com/zhangtianhua/rdt-cli-go/internal/output"
 	"github.com/zhangtianhua/rdt-cli-go/internal/parser"
 )
@@ -52,14 +53,14 @@ var userCmd = &cobra.Command{
 
 var userPostsCmd = &cobra.Command{
 	Use:   "user-posts <username>",
-	Short: "Show a user's posts",
+	Short: "Fetch a user's posts",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runUserPosts,
 }
 
 var userCommentsCmd = &cobra.Command{
 	Use:   "user-comments <username>",
-	Short: "Show a user's comments",
+	Short: "Fetch a user's comments",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runUserComments,
 }
@@ -70,12 +71,14 @@ func init() {
 	addListingFlags(userPostsCmd)
 	addListingFlags(userCommentsCmd)
 
-	subCmd.Flags().Int("limit", 25, "Number of posts")
+	subCmd.Flags().Int("limit", 25, "Number of posts per page")
 	subCmd.Flags().String("after", "", "Pagination cursor")
 	subCmd.Flags().StringP("sort", "s", "hot", "Sort: hot|new|top|rising|controversial|best")
 	subCmd.Flags().StringP("time", "t", "", "Time filter (for top/controversial): hour|day|week|month|year|all")
 	subCmd.Flags().Bool("json", false, "Output as JSON")
 	subCmd.Flags().Bool("yaml", false, "Output as YAML")
+	subCmd.Flags().Bool("all", false, "Fetch all pages (auto-paginate)")
+	subCmd.Flags().String("output", "", "Save results to file (.json or .csv)")
 
 	subInfoCmd.Flags().Bool("json", false, "Output as JSON")
 	subInfoCmd.Flags().Bool("yaml", false, "Output as YAML")
@@ -87,10 +90,12 @@ func init() {
 }
 
 func addListingFlags(cmd *cobra.Command) {
-	cmd.Flags().Int("limit", 25, "Number of posts")
+	cmd.Flags().Int("limit", 25, "Number of posts per page (max 100)")
 	cmd.Flags().String("after", "", "Pagination cursor")
 	cmd.Flags().Bool("json", false, "Output as JSON")
 	cmd.Flags().Bool("yaml", false, "Output as YAML")
+	cmd.Flags().Bool("all", false, "Fetch all pages (auto-paginate)")
+	cmd.Flags().String("output", "", "Save results to file (.json or .csv)")
 }
 
 // ── handlers ─────────────────────────────────────────────────────────
@@ -173,15 +178,63 @@ func runUserComments(cmd *cobra.Command, args []string) error {
 	c := client.New()
 	asJSON, _ := cmd.Flags().GetBool("json")
 	asYAML, _ := cmd.Flags().GetBool("yaml")
+	fetchAll, _ := cmd.Flags().GetBool("all")
+	outFile, _ := cmd.Flags().GetString("output")
 	limit, _ := cmd.Flags().GetInt("limit")
 	after, _ := cmd.Flags().GetString("after")
 
+	path := fmt.Sprintf("/user/%s/comments.json", args[0])
+	baseParams := map[string]string{}
+	if after != "" {
+		baseParams["after"] = after
+	}
+
+	if fetchAll {
+		fmt.Fprintf(os.Stderr, "fetching all comments for u/%s...\n", args[0])
+		rawEntries, err := c.FetchAllComments(path, baseParams, 100, func(n int) {
+			fmt.Fprintf(os.Stderr, "\r  %d comments fetched...", n)
+		})
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return handleErr(err, asJSON, asYAML)
+		}
+
+		entries := make([]output.CommentEntry, 0, len(rawEntries))
+		for _, d := range rawEntries {
+			entries = append(entries, output.CommentEntry{
+				Author:  client.CastString(d["author"]),
+				Body:    client.CastString(d["body"]),
+				Score:   client.CastInt(d["score"]),
+				Created: client.CastFloat(d["created_utc"]),
+				Sub:     client.CastString(d["subreddit"]),
+				PostID:  client.CastString(d["link_id"]),
+			})
+		}
+
+		if outFile != "" {
+			if err := output.WriteCommentsToFile(entries, outFile); err != nil {
+				return fmt.Errorf("write output: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "saved %d comments to %s\n", len(entries), outFile)
+			return nil
+		}
+
+		if asJSON {
+			output.PrintJSON(entries)
+		} else if asYAML {
+			output.PrintYAML(entries)
+		} else {
+			printCommentEntries(entries)
+		}
+		return nil
+	}
+
+	// Single page
 	params := map[string]string{"limit": fmt.Sprintf("%d", limit)}
 	if after != "" {
 		params["after"] = after
 	}
-
-	raw, err := c.Get(fmt.Sprintf("/user/%s/comments.json", args[0]), params)
+	raw, err := c.Get(path, params)
 	if err != nil {
 		return handleErr(err, asJSON, asYAML)
 	}
@@ -190,28 +243,29 @@ func runUserComments(cmd *cobra.Command, args []string) error {
 	data := client.CastMap(m["data"])
 	children := client.CastSlice(data["children"])
 
-	type commentEntry struct {
-		Author  string  `json:"author" yaml:"author"`
-		Body    string  `json:"body" yaml:"body"`
-		Score   int     `json:"score" yaml:"score"`
-		Created float64 `json:"created_utc" yaml:"created_utc"`
-		Sub     string  `json:"subreddit" yaml:"subreddit"`
-	}
-
-	var entries []commentEntry
+	var entries []output.CommentEntry
 	for _, child := range children {
 		cm := client.CastMap(child)
 		d := client.CastMap(cm["data"])
 		if d == nil {
 			continue
 		}
-		entries = append(entries, commentEntry{
+		entries = append(entries, output.CommentEntry{
 			Author:  client.CastString(d["author"]),
 			Body:    client.CastString(d["body"]),
 			Score:   client.CastInt(d["score"]),
 			Created: client.CastFloat(d["created_utc"]),
 			Sub:     client.CastString(d["subreddit"]),
+			PostID:  client.CastString(d["link_id"]),
 		})
+	}
+
+	if outFile != "" {
+		if err := output.WriteCommentsToFile(entries, outFile); err != nil {
+			return fmt.Errorf("write output: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "saved %d comments to %s\n", len(entries), outFile)
+		return nil
 	}
 
 	if asJSON {
@@ -219,16 +273,20 @@ func runUserComments(cmd *cobra.Command, args []string) error {
 	} else if asYAML {
 		output.PrintYAML(entries)
 	} else {
-		for i, e := range entries {
-			body := e.Body
-			if len(body) > 120 {
-				body = body[:117] + "..."
-			}
-			fmt.Printf("%d. [r/%s] %s  (%s)\n   %s\n\n",
-				i+1, e.Sub, output.FormatScore(e.Score), output.FormatTime(e.Created), body)
-		}
+		printCommentEntries(entries)
 	}
 	return nil
+}
+
+func printCommentEntries(entries []output.CommentEntry) {
+	for i, e := range entries {
+		body := e.Body
+		if len(body) > 120 {
+			body = body[:117] + "..."
+		}
+		fmt.Printf("%d. [r/%s] %s  (%s)\n   %s\n\n",
+			i+1, e.Sub, output.FormatScore(e.Score), output.FormatTime(e.Created), body)
+	}
 }
 
 // ── helpers ───────────────────────────────────────────────────────────
@@ -251,7 +309,38 @@ func runListingWithPath(cmd *cobra.Command, path string, params map[string]strin
 	c := client.New()
 	asJSON, _ := cmd.Flags().GetBool("json")
 	asYAML, _ := cmd.Flags().GetBool("yaml")
+	fetchAll, _ := cmd.Flags().GetBool("all")
+	outFile, _ := cmd.Flags().GetString("output")
 
+	if fetchAll {
+		fmt.Fprintf(os.Stderr, "fetching all posts from %s...\n", title)
+		posts, err := c.FetchAllPosts(path, params, 100, func(n int) {
+			fmt.Fprintf(os.Stderr, "\r  %d posts fetched...", n)
+		})
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return handleErr(err, asJSON, asYAML)
+		}
+
+		if outFile != "" {
+			if err := output.WritePostsToFile(posts, outFile); err != nil {
+				return fmt.Errorf("write output: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "saved %d posts to %s\n", len(posts), outFile)
+			return nil
+		}
+
+		if asJSON {
+			output.PrintJSON(posts)
+		} else if asYAML {
+			output.PrintYAML(posts)
+		} else {
+			output.PrintPostTable(&models.ListingPage{Items: posts}, title, showSub)
+		}
+		return nil
+	}
+
+	// Single page
 	raw, err := c.Get(path, params)
 	if err != nil {
 		return handleErr(err, asJSON, asYAML)
@@ -261,6 +350,14 @@ func runListingWithPath(cmd *cobra.Command, path string, params map[string]strin
 
 	if err := cache.SaveIndex(page.Items, title); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not save index cache: %v\n", err)
+	}
+
+	if outFile != "" {
+		if err := output.WritePostsToFile(page.Items, outFile); err != nil {
+			return fmt.Errorf("write output: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "saved %d posts to %s\n", len(page.Items), outFile)
+		return nil
 	}
 
 	if asJSON {
